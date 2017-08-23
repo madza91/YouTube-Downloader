@@ -2,6 +2,8 @@
 
 namespace YoutubeDownloader;
 
+use YoutubeDownloader\Cache\Cache;
+
 /**
  * VideoInfo
  *
@@ -134,19 +136,43 @@ class VideoInfo
 	 * @param string $video_info
 	 * @return VideoInfo
 	 */
-	public static function createFromString($string)
+	public static function createFromStringWithConfig($string, Config $config)
 	{
 		parse_str($string, $video_info);
 
-		return new self($video_info);
+		return new self($video_info, $config);
 	}
 
+	/**
+	 * @var YoutubeDownloader\Cache\Cache
+	 */
+	private $cache;
+
+	/**
+	 * @var array
+	 */
+	private $config;
+
+	/**
+	 * @var Format[]
+	 */
+	private $formats;
+
+	/**
+	 * @var Format[]
+	 */
+	private $adaptive_formats;
+
+	/**
+	 * @var array
+	 */
 	private $data = [];
 
 	/**
 	 * Set the necessary keys
 	 */
 	private $allowed_keys = [
+		'video_id',
 		'status',
 		'reason',
 		'thumbnail_url',
@@ -159,10 +185,26 @@ class VideoInfo
 	 * Creates a VideoInfo from an array
 	 *
 	 * @param array $video_info
+	 * @param Config $config
 	 * @return self
 	 */
-	private function __construct(array $video_info)
+	private function __construct(array $video_info, Config $config = null)
 	{
+		// BC: Create config array
+		if ($config === null)
+		{
+			$config = [
+				'decipher_signature' => false,
+			];
+		}
+		else {
+			$config = [
+				'decipher_signature' => $config->get('enable_youtube_decipher_signature'),
+			];
+		}
+
+		$this->config = $config;
+
 		foreach ($this->allowed_keys as $key)
 		{
 			if ( isset($video_info[$key]) )
@@ -174,6 +216,47 @@ class VideoInfo
 				$this->data[$key] = null;
 			}
 		}
+	}
+
+	/**
+	 * Parses an array of formats
+	 *
+	 * @param array $format_array
+	 * @param array $config
+	 * @return array
+	 */
+	private function parseFormats(array $format_array, array $config)
+	{
+		$formats = [];
+
+		if (count($format_array) === 1 and $format_array[0] === '' )
+		{
+			return $formats;
+		}
+
+		foreach ($format_array as $format)
+		{
+			parse_str($format, $format_info);
+
+			if ( count($format_info) <= 1 )
+			{
+				continue;
+			}
+
+			$formats[] = Format::createFromArray($this, $format_info, $config);
+		}
+
+		return $formats;
+	}
+
+	/**
+	 * Get the video_id
+	 *
+	 * @return string
+	 */
+	public function getVideoId()
+	{
+		return $this->data['video_id'];
 	}
 
 	/**
@@ -224,26 +307,94 @@ class VideoInfo
 	public function getCleanedTitle()
 	{
 		// Removes non-alphanumeric and unicode character.
-	        return preg_replace('/[^A-Za-z0-9]+/', '-', $this->getTitle());
+	    $title = preg_replace('/[^A-Za-z0-9]+/', '-', $this->getTitle());
+		return trim($title, "-");
 	}
 
 	/**
-	 * Get the url_encoded_fmt_stream_map
+	 * Get the Formats
 	 *
-	 * @return string
+	 * @return Format[] array with Format instances
 	 */
-	public function getStreamMapString()
+	public function getFormats()
 	{
-		return $this->data['url_encoded_fmt_stream_map'];
+		if ( $this->formats === null )
+		{
+			// get the url_encoded_fmt_stream_map, and explode on comma
+			$formats = explode(',', $this->data['url_encoded_fmt_stream_map']);
+			$this->formats = $this->parseFormats($formats, $this->config);
+		}
+
+		return $this->formats;
 	}
 
 	/**
-	 * Get the adaptive_fmts
+	 * Get the adaptive Formats
 	 *
-	 * @return string
+	 * @return Format[] array with Format instances
 	 */
-	public function getAdaptiveFormatsString()
+	public function getAdaptiveFormats()
 	{
-		return $this->data['adaptive_fmts'];
+		if ( $this->adaptive_formats === null )
+		{
+			// get the adaptive_fmts, and explode on comma
+			$adaptive_formats = explode(',', $this->data['adaptive_fmts']);
+			$this->adaptive_formats = $this->parseFormats($adaptive_formats, $this->config);
+		}
+
+		return $this->adaptive_formats;
+	}
+
+	/**
+	 * Set cache adapter
+	 *
+	 * @param YoutubeDownloader\Cache\Cache $cache
+	 * @return void
+	 */
+	public function setCache(Cache $cache)
+	{
+		$this->cache = $cache;
+	}
+
+	/**
+	 * Get from cache
+	 *
+	 * @param string $key
+	 * @param mixed $default
+	 * @return mixed
+	 */
+	public function getFromCache($key, $default = null)
+	{
+		if ( $this->cache !== null )
+		{
+			return $this->cache->get($key, $default);
+		}
+
+		die('cache not set');
+
+		if ( file_exists('cache/videoinfo_' . $key) )
+		{
+			return file_get_contents('cache/videoinfo_' . $key);
+		}
+
+		return $default;
+	}
+
+	/**
+	 * Set to cache
+	 *
+	 * @param string $key
+	 * @param mixed $value
+	 * @param null|int|DateTimeInterval $ttl
+	 * @return bool
+	 */
+	public function setToCache($key, $value, $ttl = null)
+	{
+		if ( $this->cache !== null )
+		{
+			return $this->cache->set($key, $value, $ttl);
+		}
+
+		return file_put_contents('cache/videoinfo_' . $key, $value);
 	}
 }
